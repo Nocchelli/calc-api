@@ -38,6 +38,9 @@ async def extrair_parcelas(
     # Executa a extração
     dados_extraidos = extrator.extrair(conteudo_arquivo)
 
+    if "erro" in dados_extraidos:
+        return {"erro": dados_extraidos["erro"]}
+
     return {
         "cliente": dados_extraidos.get("cliente"),
         "contrato": dados_extraidos.get("contrato"),

@@ -7,14 +7,41 @@ from app.extractors.base import ExtratorBase
 
 class ExtratorViverBem(ExtratorBase):
 
-    # Ordem das colunas extras no layout "completo"
-    COLUNAS_COMPLETO = [
+    # Campos sem os quais não é possível calcular a parcela.
+    # nome interno -> rótulo amigável usado na mensagem de erro
+    CAMPOS_OBRIGATORIOS = {
+        "vencimento": "Dt Vencim (data de vencimento)",
+        "valor_original": "Valor Parc. (valor da parcela)",
+        "dt_receb": "Dt. Receb. (data de recebimento)",
+    }
+
+    # Colunas extras opcionais: quando o PDF não trouxer alguma delas,
+    # o valor é preenchido com 0,00.
+    CAMPOS_EXTRAS = [
         "juros", "correcao", "multa", "juros_atraso",
         "acrescimo", "desconto_antecipado", "outros"
     ]
 
-    # Ordem das colunas extras no layout "reduzido"
-    COLUNAS_REDUZIDO = ["correcao", "multa", "juros_atraso"]
+    # Reconhece cada campo pelo texto do cabeçalho da tabela, tolerando falta
+    # de acentuação (comum em texto extraído de PDF) e pequenas variações de
+    # abreviação. Alternativas mais específicas vêm antes das mais genéricas
+    # (ex.: "Juros Atr." antes de "Juros" isolado) para não haver ambiguidade.
+    PADRAO_CAMPOS = re.compile(
+        r'(?P<juros_atraso>Juros\s*Atr[a-z\.]*)'
+        r'|(?P<correcao>Corre[cç][aã]o)'
+        r'|(?P<multa>Multa)'
+        r'|(?P<acrescimo>Acr[eé]sc?[a-z\.]*)'
+        r'|(?P<desconto_antecipado>Desc\.?\s*Ant[a-z\.]*)'
+        r'|(?P<outros>Outros?)'
+        r'|(?P<vlr_parcela>Vlr\.?\s*(da\s*)?Parcela)'
+        r'|(?P<valor_original>Valor\s*Parc[a-z\.]*)'
+        r'|(?P<dt_receb>Dt\.?\s*Receb[a-z\.]*)'
+        r'|(?P<vencimento>Dt\.?\s*Vencim[a-z\.]*)'
+        r'|(?P<descricao>Descri[cç][aã]o)'
+        r'|(?P<parcela>Parcela)'
+        r'|(?P<juros>Juros)',
+        re.IGNORECASE
+    )
 
     def extrair(self, conteudo_arquivo: bytes) -> dict:
         parcelas = []
@@ -37,13 +64,7 @@ class ExtratorViverBem(ExtratorBase):
         padrao_linha_parcela = re.compile(r'^(P\.\d+|E\.\d+)\/\d+')
         padrao_data = re.compile(r'^\d{2}/\d{2}/\d{4}$')
 
-        # Detecta qual layout de colunas extras o relatório usa.
-        # Só precisa ser feito uma vez (o layout é o mesmo em todas as páginas do PDF).
-        padrao_layout_completo = re.compile(
-            r'Receb\.?\s*Juros\s*Correç[ãa]o', re.IGNORECASE
-        )
-
-        colunas_extras = None  # será definido assim que encontrarmos o cabeçalho
+        zonas_colunas = None  # dict: nome_campo -> (x_esquerda, x_direita)
         hoje = datetime.now().date()
 
         with pdfplumber.open(io.BytesIO(conteudo_arquivo)) as pdf:
@@ -77,74 +98,186 @@ class ExtratorViverBem(ExtratorBase):
                 if m_cid:
                     detalhes_contrato["cidade_uf"] = f"{m_cid.group(1)} / {m_cid.group(2)}"
 
-                # Define o layout de colunas extras assim que o cabeçalho aparecer
-                if colunas_extras is None and ("Dt. Receb." in texto or "Dt.Receb." in texto):
-                    if padrao_layout_completo.search(texto):
-                        colunas_extras = self.COLUNAS_COMPLETO
+                palavras = pagina.extract_words(use_text_flow=False, keep_blank_chars=False)
+                if not palavras:
+                    continue
+                linhas_palavras = self._agrupar_por_linha(palavras)
+
+                if zonas_colunas is None:
+                    zonas_colunas = self._detectar_zonas_colunas(linhas_palavras)
+                    if zonas_colunas is None:
+                        continue  # cabeçalho da tabela ainda não apareceu nesta página
+
+                for linha_palavras in linhas_palavras:
+                    if not linha_palavras:
+                        continue
+                    codigo_parcela = linha_palavras[0]["text"]
+                    if not padrao_linha_parcela.match(codigo_parcela):
+                        continue
+
+                    valores = self._valores_por_zona(linha_palavras, zonas_colunas)
+
+                    data_vencimento = valores.get("vencimento")
+                    valor_original_str = valores.get("valor_original")
+                    if not data_vencimento or not valor_original_str:
+                        continue
+                    if not padrao_data.match(data_vencimento):
+                        continue
+
+                    try:
+                        vencimento_date = datetime.strptime(data_vencimento, "%d/%m/%Y").date()
+                    except ValueError:
+                        continue
+
+                    valor_original_float = self._parse_valor(valor_original_str)
+
+                    dt_receb_str = valores.get("dt_receb")
+                    if dt_receb_str and padrao_data.match(dt_receb_str):
+                        data_pagamento = dt_receb_str
+                        status_parcela = "Pago"
                     else:
-                        colunas_extras = self.COLUNAS_REDUZIDO
+                        data_pagamento = None
+                        status_parcela = "Vencido" if vencimento_date < hoje else "A vencer"
 
-                linhas = texto.split("\n")
-                for linha in linhas:
-                    linha = linha.strip()
-                    if padrao_linha_parcela.match(linha):
-                        partes = linha.split()
-                        try:
-                            codigo_parcela = partes[0]
-                            data_vencimento = partes[2]
-                            valor_original_str = partes[3]
+                    parcela = {
+                        "parcela": codigo_parcela,
+                        "vencimento": data_vencimento,
+                        "valor_original": valor_original_float,
+                        "status": status_parcela,
+                        "data_pagamento": data_pagamento,
+                    }
+                    for nome_campo in self.CAMPOS_EXTRAS:
+                        valor_str = valores.get(nome_campo)
+                        parcela[nome_campo] = self._parse_valor(valor_str) if valor_str else 0.0
 
-                            data_pagamento = None
-                            idx_resto = 4  # onde começam as colunas extras, por padrão
+                    parcelas.append(parcela)
 
-                            if len(partes) > 4 and padrao_data.match(partes[4]):
-                                data_pagamento = partes[4]
-                                status_parcela = "Pago"
-                                idx_resto = 5
-                            else:
-                                vencimento_date = datetime.strptime(data_vencimento, "%d/%m/%Y").date()
-                                if vencimento_date < hoje:
-                                    status_parcela = "Vencido"
-                                else:
-                                    status_parcela = "A vencer"
+        if zonas_colunas is None:
+            return {
+                "erro": (
+                    "Não foi possível localizar a tabela de parcelas no PDF: "
+                    "o cabeçalho com as colunas de vencimento e recebimento não foi encontrado."
+                )
+            }
 
-                            valor_original_float = self._parse_valor(valor_original_str)
-
-                            # Layout usado para esta linha (fallback pro completo, caso
-                            # o cabeçalho não tenha sido identificado ainda)
-                            layout_atual = colunas_extras or self.COLUNAS_COMPLETO
-
-                            resto = partes[idx_resto:]
-                            extras = {}
-                            for i, nome_coluna in enumerate(layout_atual):
-                                if i < len(resto):
-                                    extras[nome_coluna] = self._parse_valor(resto[i])
-                                else:
-                                    extras[nome_coluna] = 0.0
-
-                            parcela = {
-                                "parcela": codigo_parcela,
-                                "vencimento": data_vencimento,
-                                "valor_original": valor_original_float,
-                                "status": status_parcela,
-                                "data_pagamento": data_pagamento,
-                            }
-                            # Garante que todas as chaves do layout "completo" sempre existam,
-                            # mesmo quando o PDF só trouxe o layout "reduzido"
-                            for nome_coluna in self.COLUNAS_COMPLETO:
-                                parcela[nome_coluna] = extras.get(nome_coluna, 0.0)
-
-                            parcelas.append(parcela)
-                        except (IndexError, ValueError):
-                            continue
+        faltando = [
+            rotulo for campo, rotulo in self.CAMPOS_OBRIGATORIOS.items()
+            if campo not in zonas_colunas
+        ]
+        if faltando:
+            return {
+                "erro": (
+                    "O PDF não contém as colunas obrigatórias para o cálculo: "
+                    + "; ".join(faltando) + "."
+                )
+            }
 
         return {"contrato": detalhes_contrato, "parcelas": parcelas, "cliente": detalhes_contrato["cliente"]}
 
     @staticmethod
-    def _parse_valor(valor_str: str) -> float:
+    def _agrupar_por_linha(palavras, tolerancia=3):
+        """Agrupa palavras extraídas do PDF em linhas, pela coordenada vertical."""
+        linhas = []
+        atual = []
+        for p in sorted(palavras, key=lambda w: (w["top"], w["x0"])):
+            if atual and (p["top"] - atual[0]["top"]) > tolerancia:
+                linhas.append(atual)
+                atual = []
+            atual.append(p)
+        if atual:
+            linhas.append(atual)
+        for linha in linhas:
+            linha.sort(key=lambda w: w["x0"])
+        return linhas
+
+    def _detectar_zonas_colunas(self, linhas_palavras):
+        """
+        Localiza a linha de cabeçalho da tabela de parcelas e monta, para cada
+        campo reconhecido, a faixa horizontal (x0, x1) onde seu valor aparece
+        nas linhas de dados — usando a posição real das palavras no PDF, e não
+        a ordem ou a quantidade de colunas.
+
+        Isso permite que o PDF tenha qualquer número de colunas (conhecidas ou
+        não) em qualquer ordem, e tolera colunas que ficam em branco em
+        algumas linhas (ex.: uma coluna "Atraso" que só aparece quando há
+        dias de atraso).
+        """
+        for linha in linhas_palavras:
+            texto_linha = " ".join(p["text"] for p in linha)
+            if not re.search(r'Vencim', texto_linha, re.IGNORECASE):
+                continue
+            if not re.search(r'Receb', texto_linha, re.IGNORECASE):
+                continue
+
+            texto_montado = ""
+            offsets = []
+            for p in linha:
+                if texto_montado:
+                    texto_montado += " "
+                inicio = len(texto_montado)
+                texto_montado += p["text"]
+                offsets.append((inicio, len(texto_montado), p))
+
+            # Percorre o cabeçalho marcando, em ordem, tanto os campos
+            # reconhecidos quanto os "buracos" (colunas desconhecidas) — para
+            # que estes últimos reservem seu espaço e não sejam engolidos
+            # pelas colunas vizinhas conhecidas.
+            pontos = []  # lista de (x0, x1, nome_campo_ou_None)
+            cursor = 0
+            for m in self.PADRAO_CAMPOS.finditer(texto_montado):
+                for (s, e, p) in offsets:
+                    if s >= cursor and e <= m.start():
+                        pontos.append((p["x0"], p["x1"], None))
+                palavras_do_match = [p for (s, e, p) in offsets if s < m.end() and e > m.start()]
+                if palavras_do_match:
+                    x0 = min(p["x0"] for p in palavras_do_match)
+                    x1 = max(p["x1"] for p in palavras_do_match)
+                    pontos.append((x0, x1, m.lastgroup))
+                cursor = max(cursor, m.end())
+            for (s, e, p) in offsets:
+                if s >= cursor:
+                    pontos.append((p["x0"], p["x1"], None))
+
+            if not pontos:
+                continue
+            pontos.sort(key=lambda t: t[0])
+
+            # O limite entre duas colunas fica no meio do vão entre a borda
+            # direita de uma e a borda esquerda da próxima — não no meio dos
+            # x0 dos rótulos do cabeçalho. Isso importa porque valores
+            # monetários costumam ser alinhados à direita dentro da coluna
+            # (bem mais à direita do que o próprio rótulo do cabeçalho),
+            # então usar só os x0 deixaria a zona estreita demais e jogaria
+            # o valor real para a coluna vizinha.
+            zonas = {}
+            for i, (x0, x1, nome_campo) in enumerate(pontos):
+                if nome_campo is None:
+                    continue
+                esq = float("-inf") if i == 0 else (pontos[i - 1][1] + x0) / 2
+                dir_ = float("inf") if i == len(pontos) - 1 else (x1 + pontos[i + 1][0]) / 2
+                zonas[nome_campo] = (esq, dir_)
+
+            if "vencimento" in zonas and "dt_receb" in zonas:
+                return zonas
+
+        return None
+
+    @staticmethod
+    def _valores_por_zona(linha_palavras, zonas):
+        valores = {nome: [] for nome in zonas}
+        for p in linha_palavras:
+            centro = (p["x0"] + p["x1"]) / 2
+            for nome_campo, (esq, dir_) in zonas.items():
+                if esq <= centro < dir_:
+                    valores[nome_campo].append(p["text"])
+                    break
+        return {nome: " ".join(txts) if txts else None for nome, txts in valores.items()}
+
+    @staticmethod
+    def _parse_valor(valor_str) -> float:
         """Converte string monetária no formato brasileiro (1.234,56) para float."""
         try:
             valor_limpo = valor_str.replace(".", "").replace(",", ".")
             return float(valor_limpo)
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, TypeError):
             return 0.0
