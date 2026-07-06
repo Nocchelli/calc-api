@@ -2,6 +2,8 @@ from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from app.enums import ContratanteEnum
 from app.extractors.viver_bem import ExtratorViverBem
+from app.extractors.real import ExtratorReal
+from app.extractors.lee_empreendimentos import ExtratorLeeEmpreendimentos
 
 app = FastAPI(title="Motor de Cálculo e Extração")
 
@@ -21,17 +23,18 @@ def home():
 
 @app.post("/extrair-parcelas")
 async def extrair_parcelas(
-    contratante: ContratanteEnum = Form(..., description="1 = VIVER_BEM, 2 = REAL"),
+    contratante: ContratanteEnum = Form(..., description="1 = VIVER_BEM, 2 = REAL, 3 = LEE_EMPREENDIMENTOS"),
     file: UploadFile = File(...)
 ):
     conteudo_arquivo = await file.read()
-    
+
     # Fábrica de extratores: Escolhe a regra baseado no parâmetro enviado
     if contratante == ContratanteEnum.VIVER_BEM:
         extrator = ExtratorViverBem()
     elif contratante == ContratanteEnum.REAL:
-        # Quando tiver o layout da REAL, basta criar o arquivo real.py e chamá-lo aqui
-        return {"erro": "Extrator para o contratante REAL ainda não foi implementado."}
+        extrator = ExtratorReal()
+    elif contratante == ContratanteEnum.LEE_EMPREENDIMENTOS:
+        extrator = ExtratorLeeEmpreendimentos()
     else:
         return {"erro": "Contratante inválido."}
 
