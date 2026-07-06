@@ -1,9 +1,15 @@
-from fastapi import FastAPI, UploadFile, File, Form
+import logging
+from datetime import datetime
+
+from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from app.enums import ContratanteEnum
 from app.extractors.viver_bem import ExtratorViverBem
 from app.extractors.real import ExtratorReal
 from app.extractors.lee_empreendimentos import ExtratorLeeEmpreendimentos
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("extrair_parcelas")
 
 app = FastAPI(title="Motor de Cálculo e Extração")
 
@@ -27,9 +33,18 @@ def health():
 
 @app.post("/extrair-parcelas")
 async def extrair_parcelas(
+    request: Request,
     contratante: ContratanteEnum = Form(..., description="1 = VIVER_BEM, 2 = REAL, 3 = LEE_EMPREENDIMENTOS"),
     file: UploadFile = File(...)
 ):
+    logger.info(
+        "extrair-parcelas | horario=%s | ip=%s | contratante=%s | headers=%s",
+        datetime.now().isoformat(),
+        request.client.host if request.client else None,
+        contratante.name,
+        dict(request.headers),
+    )
+
     conteudo_arquivo = await file.read()
 
     # Fábrica de extratores: Escolhe a regra baseado no parâmetro enviado
