@@ -21,6 +21,10 @@ app.add_middleware(
 def home():
     return {"status": "Serviço estruturado rodando com sucesso!"}
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 @app.post("/extrair-parcelas")
 async def extrair_parcelas(
     contratante: ContratanteEnum = Form(..., description="1 = VIVER_BEM, 2 = REAL, 3 = LEE_EMPREENDIMENTOS"),
