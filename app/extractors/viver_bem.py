@@ -62,7 +62,13 @@ class ExtratorViverBem(ExtratorBase):
         padrao_cidade = re.compile(r'Cidade\s*:\s*(.+?)\s+UF\s*:\s*(.+?)\s+CEP')
 
         padrao_linha_parcela = re.compile(r'^(P\.\d+|E\.\d+)\/\d+')
-        padrao_data = re.compile(r'^\d{2}/\d{2}/\d{4}$')
+        # Busca (não match estrito) porque, em alguns PDFs, o cabeçalho gruda o rótulo
+        # de uma coluna vizinha (ex.: "VencimAtraso" sem espaço) sem que isso apareça
+        # como uma palavra separada — nesse caso a zona de "vencimento" fica larga
+        # demais e absorve o valor da coluna "Atraso" da linha de dados junto com a
+        # data. Buscando a data dentro do texto (em vez de exigir igualdade exata)
+        # a extração continua funcionando mesmo com esse ruído extra na zona.
+        padrao_data = re.compile(r'\d{2}/\d{2}/\d{4}')
 
         zonas_colunas = None  # dict: nome_campo -> (x_esquerda, x_direita)
         hoje = datetime.now().date()
@@ -117,12 +123,14 @@ class ExtratorViverBem(ExtratorBase):
 
                     valores = self._valores_por_zona(linha_palavras, zonas_colunas)
 
-                    data_vencimento = valores.get("vencimento")
+                    data_vencimento_bruta = valores.get("vencimento")
                     valor_original_str = valores.get("valor_original")
-                    if not data_vencimento or not valor_original_str:
+                    if not data_vencimento_bruta or not valor_original_str:
                         continue
-                    if not padrao_data.match(data_vencimento):
+                    m_venc = padrao_data.search(data_vencimento_bruta)
+                    if not m_venc:
                         continue
+                    data_vencimento = m_venc.group()
 
                     try:
                         vencimento_date = datetime.strptime(data_vencimento, "%d/%m/%Y").date()
@@ -132,8 +140,9 @@ class ExtratorViverBem(ExtratorBase):
                     valor_original_float = self._parse_valor(valor_original_str)
 
                     dt_receb_str = valores.get("dt_receb")
-                    if dt_receb_str and padrao_data.match(dt_receb_str):
-                        data_pagamento = dt_receb_str
+                    m_receb = padrao_data.search(dt_receb_str) if dt_receb_str else None
+                    if m_receb:
+                        data_pagamento = m_receb.group()
                         status_parcela = "Pago"
                     else:
                         data_pagamento = None
