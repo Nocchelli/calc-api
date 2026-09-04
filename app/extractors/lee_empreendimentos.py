@@ -29,33 +29,27 @@ class ExtratorLeeEmpreendimentos(ExtratorBase):
     posição x/y das palavras, como no extrator da Viver Bem.
     """
 
-    _NUM = r'\d{1,3}(?:\.\d{3})*,\d{2}'
+    # Atualizado para aceitar separadores de ponto ou vírgula e valores negativos
+    _NUM = r'-?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})'
 
     PADRAO_TIPO_ABERTO = re.compile(r'Parcelas\s+em\s+Aberto', re.IGNORECASE)
     PADRAO_TIPO_VENCIDA = re.compile(r'Parcelas\s+Vencidas', re.IGNORECASE)
     PADRAO_TIPO_PAGA = re.compile(r'Parcelas\s+Pagas\s+Atualizadas', re.IGNORECASE)
     PADRAO_TIPO_CONTRATO = re.compile(r'Parcelas\s+por\s+Contrato', re.IGNORECASE)
 
-    # Nº Parc/Ren | Dt. Venc | Vlr. Parcela | Vlr. Outros | Vlr Presente | Vlr Diferença
-    # O grupo "ren" é opcional porque, em alguns PDFs, o pdfplumber não detecta
-    # espaço entre o número da parcela e o código de renegociação (ex.: "25200"
-    # em vez de "25 200"). Nesse caso o "parc" ganancioso absorve os dois
-    # números colados e eles são separados depois, em _dividir_parc_ren.
     PADRAO_LINHA_ABERTO = re.compile(
         r'^(?P<parc>\d+)(?:\s+(?P<ren>\d+))?\s+'
         r'(?P<vencimento>\d{2}/\d{2}/\d{4})\s+'
         rf'(?P<vlr_parcela>{_NUM})\s+'
         rf'(?P<vlr_outros>{_NUM})\s+'
         rf'(?P<vlr_presente>{_NUM})\s+'
-        rf'(?P<vlr_diferenca>-?{_NUM})\s*$'
+        rf'(?P<vlr_diferenca>{_NUM})\s*$'
     )
 
-    # Nº Parc/Ren | Dt. Venc. Ini. | Qtd. dias atraso | Vlr. Parcela | Vlr. Outros
-    # | Vlr. Corr. Monet. | Vlr. Juros | Vlr. Multa | Vlr a Pagar
     PADRAO_LINHA_VENCIDA = re.compile(
         r'^(?P<parc>\d+)(?:\s+(?P<ren>\d+))?\s+'
         r'(?P<vencimento>\d{2}/\d{2}/\d{4})\s+'
-        r'(?P<dias_atraso>\d+)\s+'
+        r'(?P<dias_atraso>-?\d+)?\s+'
         rf'(?P<vlr_parcela>{_NUM})\s+'
         rf'(?P<vlr_outros>{_NUM})\s+'
         rf'(?P<vlr_corr_monet>{_NUM})\s+'
@@ -64,13 +58,11 @@ class ExtratorLeeEmpreendimentos(ExtratorBase):
         rf'(?P<vlr_a_pagar>{_NUM})\s*$'
     )
 
-    # Parc/Ren (ou "Mfd") | Vencto | Pagto | Atraso | Parcela | Vlr. Taxa
-    # | Vlr. MFD | Vlr. Juros | Vlr. Multa | Vlr. Desconto | Vlr. Pago
     PADRAO_LINHA_PAGA = re.compile(
         r'^(?:(?P<parc>\d+)(?:\s+(?P<ren>\d+))?|(?P<mfd>Mfd))\s+'
         r'(?P<vencimento>\d{2}/\d{2}/\d{4})\s+'
         r'(?P<pagamento>\d{2}/\d{2}/\d{4})\s+'
-        r'(?P<atraso>\d+)\s+'
+        r'(?P<atraso>-?\d+)?\s+'
         rf'(?P<vlr_parcela>{_NUM})\s+'
         rf'(?P<vlr_taxa>{_NUM})\s+'
         rf'(?P<vlr_mfd>{_NUM})\s+'
@@ -80,14 +72,11 @@ class ExtratorLeeEmpreendimentos(ExtratorBase):
         rf'(?P<vlr_pago>{_NUM})\s*$'
     )
 
-    # Parc/Ren (ou "MF") | Vencto | Pagto (opcional - só quando já paga) | Atraso
-    # | Entrada | Parcela | Outros | Atu. Monet. | Juros | Multa
-    # | Vlr.Bx - Vlr.Parc | A Pagar | Pago
     PADRAO_LINHA_CONTRATO = re.compile(
         r'^(?:(?P<parc>\d+)\s+(?P<ren>\S+)|(?P<mf>MF))\s+'
         r'(?P<vencimento>\d{2}/\d{2}/\d{2,4})\s+'
         r'(?:(?P<pagamento>\d{2}/\d{2}/\d{2,4})\s+)?'
-        r'(?P<atraso>\d+)\s+'
+        r'(?P<atraso>-?\d+)?\s+'
         rf'(?P<vlr_entrada>{_NUM})\s+'
         rf'(?P<vlr_parcela>{_NUM})\s+'
         rf'(?P<vlr_outros>{_NUM})\s+'
@@ -137,16 +126,27 @@ class ExtratorLeeEmpreendimentos(ExtratorBase):
 
         with pdfplumber.open(io.BytesIO(conteudo_arquivo)) as pdf:
             for pagina in pdf.pages:
-                texto = pagina.extract_text()
-                if not texto:
+                texto_cru = pagina.extract_text()
+                if not texto_cru:
                     continue
 
                 if tipo_relatorio is None:
-                    tipo_relatorio = self._detectar_tipo_relatorio(texto)
+                    tipo_relatorio = self._detectar_tipo_relatorio(texto_cru)
 
-                self._extrair_detalhes_contrato(pagina, detalhes_contrato)
+                # Agrupa palavras para reconstruir a página inteira, sanando quebras de linha na tabela
+                palavras = pagina.extract_words(use_text_flow=False, keep_blank_chars=False)
+                if not palavras:
+                    continue
 
-                for linha in texto.split("\n"):
+                linhas_palavras = self._agrupar_por_linha(palavras)
+                linhas_texto = [" ".join(p["text"] for p in linha) for linha in linhas_palavras]
+                texto_reconstruido = "\n".join(linhas_texto)
+
+                # Extrai dados do contrato usando o texto já reconstruído espacialmente
+                self._extrair_detalhes_contrato_do_texto(texto_reconstruido, linhas_texto, detalhes_contrato)
+
+                # Passamos o regex nas linhas reagrupadas (agora tabela e cabeçalho estão na mesma ordem visual)
+                for linha in linhas_texto:
                     parcela = self._parse_linha_parcela(
                         linha.strip(), tipo_relatorio, hoje, detalhes_contrato.get("plano")
                     )
@@ -217,7 +217,7 @@ class ExtratorLeeEmpreendimentos(ExtratorBase):
                 "parcela": parc,
                 "plano": ren,
                 "vencimento": m.group("vencimento"),
-                "dias_atraso": int(m.group("dias_atraso")),
+                "dias_atraso": int(m.group("dias_atraso") or 0),
                 "valor_parcela": self._parse_valor(m.group("vlr_parcela")),
                 "vlr_outros": self._parse_valor(m.group("vlr_outros")),
                 "vlr_corr_monet": self._parse_valor(m.group("vlr_corr_monet")),
@@ -243,7 +243,7 @@ class ExtratorLeeEmpreendimentos(ExtratorBase):
                 "parcela": parc,
                 "plano": ren,
                 "vencimento": m.group("vencimento"),
-                "atraso": int(m.group("atraso")),
+                "atraso": int(m.group("atraso") or 0),
                 "valor_parcela": self._parse_valor(m.group("vlr_parcela")),
                 "vlr_taxa": self._parse_valor(m.group("vlr_taxa")),
                 "vlr_mfd": self._parse_valor(m.group("vlr_mfd")),
@@ -278,7 +278,7 @@ class ExtratorLeeEmpreendimentos(ExtratorBase):
                 "parcela": parc,
                 "plano": ren,
                 "vencimento": m.group("vencimento"),
-                "atraso": int(m.group("atraso")),
+                "atraso": int(m.group("atraso") or 0),
                 "vlr_entrada": self._parse_valor(m.group("vlr_entrada")),
                 "valor_parcela": self._parse_valor(m.group("vlr_parcela")),
                 "vlr_outros": self._parse_valor(m.group("vlr_outros")),
@@ -295,15 +295,7 @@ class ExtratorLeeEmpreendimentos(ExtratorBase):
 
         return None
 
-    def _extrair_detalhes_contrato(self, pagina, detalhes_contrato):
-        palavras = pagina.extract_words(use_text_flow=False, keep_blank_chars=False)
-        if not palavras:
-            return
-
-        linhas_palavras = self._agrupar_por_linha(palavras)
-        linhas_texto = [" ".join(p["text"] for p in linha) for linha in linhas_palavras]
-        texto_reconstruido = "\n".join(linhas_texto)
-
+    def _extrair_detalhes_contrato_do_texto(self, texto_reconstruido, linhas_texto, detalhes_contrato):
         m = self.PADRAO_CODIGO.search(texto_reconstruido)
         if m:
             detalhes_contrato["codigo"] = m.group(1).strip()
@@ -407,9 +399,19 @@ class ExtratorLeeEmpreendimentos(ExtratorBase):
 
     @staticmethod
     def _parse_valor(valor_str) -> float:
-        """Converte string monetária no formato brasileiro (1.234,56) para float."""
+        """Converte string monetária flexível (com ponto ou vírgula) para float."""
+        if not valor_str:
+            return 0.0
         try:
-            valor_limpo = valor_str.replace(".", "").replace(",", ".")
-            return float(valor_limpo)
+            v = str(valor_str).strip()
+            
+            # Identifica se o ponto está agindo como separador decimal (ex: 308.25)
+            if len(v) >= 3 and v[-3] == '.':
+                v = v.replace(',', '')
+                return float(v)
+                
+            # Padrão brasileiro original (ex: 308,25 ou 1.234,56)
+            v = v.replace('.', '').replace(',', '.')
+            return float(v)
         except (ValueError, AttributeError, TypeError):
             return 0.0
