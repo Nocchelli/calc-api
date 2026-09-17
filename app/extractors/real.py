@@ -21,7 +21,10 @@ class ExtratorReal(ExtratorBase):
         "valor_original": "Vlr. c/ Acréscimos (valor da parcela)",
     }
 
-    _NUM = r'\d{1,3}(?:\.\d{3})*,\d{2}'
+    # Alguns extratos apresentam descontos na coluna "Vlr. Acréscimos"
+    # (por exemplo, -25,33). O sinal é opcional para manter compatibilidade
+    # com os valores positivos das demais colunas.
+    _NUM = r'-?\d{1,3}(?:\.\d{3})*,\d{2}'
 
     # Colunas na ordem em que aparecem nas 3 tabelas do extrato (Pagos,
     # Vencidas e A Vencer): Dt.Vencto, Parc., Tipo, Condição (opcional),
