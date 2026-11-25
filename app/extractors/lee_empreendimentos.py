@@ -193,15 +193,17 @@ class ExtratorLeeEmpreendimentos(ExtratorBase):
                 return None
             status = "Vencido" if vencimento_date < hoje else "A vencer"
             parc, ren = self._dividir_parc_ren(m.group("parc"), m.group("ren"), plano)
+            vlr_parcela = self._parse_valor(m.group("vlr_parcela"))
+            vlr_presente = self._parse_valor(m.group("vlr_presente"))
             return {
                 "parcela": parc,
                 "plano": ren,
                 "vencimento": m.group("vencimento"),
-                "valor_parcela": self._parse_valor(m.group("vlr_parcela")),
+                "valor_parcela": vlr_parcela,
                 "vlr_outros": self._parse_valor(m.group("vlr_outros")),
-                "vlr_presente": self._parse_valor(m.group("vlr_presente")),
+                "vlr_presente": vlr_presente,
                 "vlr_diferenca": self._parse_valor(m.group("vlr_diferenca")),
-                "valor_original": self._parse_valor(m.group("vlr_presente")),
+                "valor_original": vlr_parcela if status == "Vencido" else vlr_presente,
                 "status": status,
                 "data_pagamento": None,
             }
@@ -213,18 +215,19 @@ class ExtratorLeeEmpreendimentos(ExtratorBase):
             if self._parse_data(m.group("vencimento")) is None:
                 return None
             parc, ren = self._dividir_parc_ren(m.group("parc"), m.group("ren"), plano)
+            vlr_parcela = self._parse_valor(m.group("vlr_parcela"))
             return {
                 "parcela": parc,
                 "plano": ren,
                 "vencimento": m.group("vencimento"),
                 "dias_atraso": int(m.group("dias_atraso") or 0),
-                "valor_parcela": self._parse_valor(m.group("vlr_parcela")),
+                "valor_parcela": vlr_parcela,
                 "vlr_outros": self._parse_valor(m.group("vlr_outros")),
                 "vlr_corr_monet": self._parse_valor(m.group("vlr_corr_monet")),
                 "vlr_juros": self._parse_valor(m.group("vlr_juros")),
                 "vlr_multa": self._parse_valor(m.group("vlr_multa")),
                 "vlr_a_pagar": self._parse_valor(m.group("vlr_a_pagar")),
-                "valor_original": self._parse_valor(m.group("vlr_a_pagar")),
+                "valor_original": vlr_parcela,
                 "status": "Vencido",
                 "data_pagamento": None,
             }
@@ -264,12 +267,13 @@ class ExtratorLeeEmpreendimentos(ExtratorBase):
             if vencimento_date is None:
                 return None
             pagamento = m.group("pagamento")
+            vlr_parcela = self._parse_valor(m.group("vlr_parcela"))
             if pagamento:
                 status = "Pago"
                 valor_original = self._parse_valor(m.group("vlr_pago"))
             else:
                 status = "Vencido" if vencimento_date < hoje else "A vencer"
-                valor_original = self._parse_valor(m.group("vlr_a_pagar"))
+                valor_original = vlr_parcela if status == "Vencido" else self._parse_valor(m.group("vlr_a_pagar"))
             if m.group("mf"):
                 parc, ren = m.group("mf"), ""
             else:
@@ -280,7 +284,7 @@ class ExtratorLeeEmpreendimentos(ExtratorBase):
                 "vencimento": m.group("vencimento"),
                 "atraso": int(m.group("atraso") or 0),
                 "vlr_entrada": self._parse_valor(m.group("vlr_entrada")),
-                "valor_parcela": self._parse_valor(m.group("vlr_parcela")),
+                "valor_parcela": vlr_parcela,
                 "vlr_outros": self._parse_valor(m.group("vlr_outros")),
                 "vlr_atu_monet": self._parse_valor(m.group("vlr_atu_monet")),
                 "vlr_juros": self._parse_valor(m.group("vlr_juros")),
