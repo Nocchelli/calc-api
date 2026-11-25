@@ -11,7 +11,7 @@ class ExtratorViverBem(ExtratorBase):
     # nome interno -> rótulo amigável usado na mensagem de erro
     CAMPOS_OBRIGATORIOS = {
         "vencimento": "Dt Vencim (data de vencimento)",
-        "valor_original": "Valor Parc. (valor da parcela)",
+        "valor_original": "Vlr. Parcela (vencidas) / Valor Parc. (demais)",
         "dt_receb": "Dt. Receb. (data de recebimento)",
     }
 
@@ -125,6 +125,7 @@ class ExtratorViverBem(ExtratorBase):
 
                     data_vencimento_bruta = valores.get("vencimento")
                     valor_original_str = valores.get("valor_original")
+                    vlr_parcela_str = valores.get("vlr_parcela")
                     if not data_vencimento_bruta or not valor_original_str:
                         continue
                     m_venc = padrao_data.search(data_vencimento_bruta)
@@ -137,8 +138,6 @@ class ExtratorViverBem(ExtratorBase):
                     except ValueError:
                         continue
 
-                    valor_original_float = self._parse_valor(valor_original_str)
-
                     dt_receb_str = valores.get("dt_receb")
                     m_receb = padrao_data.search(dt_receb_str) if dt_receb_str else None
                     if m_receb:
@@ -148,10 +147,15 @@ class ExtratorViverBem(ExtratorBase):
                         data_pagamento = None
                         status_parcela = "Vencido" if vencimento_date < hoje else "A vencer"
 
+                    if status_parcela == "Vencido" and vlr_parcela_str:
+                        valor_final_float = self._parse_valor(vlr_parcela_str)
+                    else:
+                        valor_final_float = self._parse_valor(valor_original_str)
+
                     parcela = {
                         "parcela": codigo_parcela,
                         "vencimento": data_vencimento,
-                        "valor_original": valor_original_float,
+                        "valor_original": valor_final_float,
                         "status": status_parcela,
                         "data_pagamento": data_pagamento,
                     }

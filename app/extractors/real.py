@@ -18,7 +18,7 @@ class ExtratorReal(ExtratorBase):
 
     CAMPOS_OBRIGATORIOS = {
         "vencimento": "Dt.Vencto (data de vencimento)",
-        "valor_original": "Vlr. c/ Acréscimos (valor da parcela)",
+        "valor_original": "Vlr.Parcelas (vencidas) / Vlr. c/ Acréscimos (demais)",
     }
 
     # Alguns extratos apresentam descontos na coluna "Vlr. Acréscimos"
@@ -101,6 +101,9 @@ class ExtratorReal(ExtratorBase):
                         data_pagamento = None
                         status_parcela = "Vencido" if vencimento_date < hoje else "A vencer"
 
+                    valor_base = self._parse_valor(m.group("valor_original"))
+                    valor_com_acresc = self._parse_valor(m.group("valor_com_acrescimos"))
+
                     parcelas.append({
                         "parcela": m.group("parcela"),
                         "tipo": m.group("tipo").strip(),
@@ -109,7 +112,7 @@ class ExtratorReal(ExtratorBase):
                         "vencimento": data_vencimento,
                         "valor_parcela": self._parse_valor(m.group("valor_original")),
                         "acrescimos": self._parse_valor(m.group("acrescimos")),
-                        "valor_original": self._parse_valor(m.group("valor_com_acrescimos")),
+                        "valor_original": valor_base if status_parcela == "Vencido" else valor_com_acresc,
                         "dias_atraso": int(m.group("dias_atraso")),
                         "status": status_parcela,
                         "data_pagamento": data_pagamento,
